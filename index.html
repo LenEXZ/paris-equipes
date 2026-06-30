@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>⚔️ Paris d'Équipe</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyCaaT9KKRi9aIzZIteorLVdm-TDmB4_Cyw",
+      authDomain: "paris-dequipe-len.firebaseapp.com",
+      databaseURL: "https://paris-dequipe-len-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "paris-dequipe-len",
+      storageBucket: "paris-dequipe-len.firebasestorage.app",
+      messagingSenderId: "75490659674",
+      appId: "1:75490659674:web:40c4f8a7ebf045233a7763",
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+    window.__db = db;
+    window.__dbRef = ref;
+    window.__dbOnValue = onValue;
+    window.__dbSet = set;
+    window.__firebaseReady = true;
+    document.dispatchEvent(new Event("firebaseReady"));
+  </script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: radial-gradient(circle at 50% 0%, #1c2030 0%, #15171c 60%); min-height: 100vh; color: #eef0f4; font-family: 'Segoe UI', system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    const ADMIN_CODE = "1234";
+    const DB_KEY = "paris-equipes-v1";
+    const DEFAULT_STATE = {
+      nameRed: "Équipe Rouge",
+      nameBlue: "Équipe Bleue",
+      players: {},
+      bets: [],
+      winner: null,
+      history: [],
+      nextPlayerId: 1,
+      nextBetId: 1,
+    };
+
+    function uid() { return Math.random().toString(36).slice(2, 9); }
+
+    function App() {
+      const [state, setState] = useState(null);
+      const [fbReady, setFbReady] = useState(false);
+      const [activePlayerId, setActivePlayerId] = useState(null);
+      const [betInput, setBetInput] = useState("");
+      const [betSide, setBetSide] = useState("red");
+      const [newPlayerName, setNewPlayerName] = useState("");
+      const [isAdmin, setIsAdmin] = useState(false);
+      const [adminCodeInput, setAdminCodeInput] = useState("");
+      const [adminError, setAdminError] = useState("");
+      const [giveAmount, setGiveAmount] = useState("");
+      const [giveTargetId, setGiveTargetId] = useState("");
+      const [error, setError] = useState(null);
+
+      useEffect(() => {
+        function init() {
+          const db = window.__db;
+          const dbRef = window.__dbRef;
+          const onValue = window.__dbOnValue;
+          const set = window.__dbSet;
+          setFbReady(true);
+
+          const r = dbRef(db, DB_KEY);
+          const unsub = onValue(r, (snapshot) => {
+            const val = snapshot.val();
+            if (val) setState(val);
+            else { setState(DEFAULT_STATE); set(r, DEFAULT_STATE); }
+          });
+          return unsub;
+        }
+
+        if (window.__firebaseReady) return init();
+        document.addEventListener("firebaseReady", init, { once: true });
+      }, []);
+
+      async function saveState(newState) {
+        try {
+          await window.__dbSet(window.__dbRef(window.__db, DB_KEY), newState);
+          setError(null);
+        } catch(e) { setError("Erreur réseau."); }
+      }
+
+      function logEvent(s, text) {
+        return { ...s, history: [{ id: uid(), text }, ...(s.history||[])].slice(0,30) };
+      }
+
+      function addPlayer() {
+        const name = newPlayerName.trim();
+        if (!name || !state) return;
+        const id = "p" + state.nextPlayerId;
+        const next = { ...state, players: { ...(state.players||{}), [id]: { name, balance: 1000 } }, nextPlayerId: state.nextPlayerId + 1 };
+        saveState(logEvent(next, `${name} a rejoint avec 1000 points.`));
+        setNewPlayerName(""); setActivePlayerId(id);
+      }
+
+      function placeBet() {
+        const amt = parseInt(betInput, 10);
+        if (!activePlayerId || !state?.players[activePlayerId] || !amt || amt <= 0 || state.winner) return;
+        const player = state.players[activePlayerId];
+        if (amt > player.balance) { setError(`${player.name} n'a que ${player.balance} pts.`); return; }
+        const betId = "b" + state.nextBetId;
+        const next = {
+          ...state,
+          players: { ...state.players, [activePlayerId]: { ...player, balance: player.balance - amt } },
+          bets: [...(state.bets||[]), { id: betId, playerId: activePlayerId, side: betSide, amount: amt }],
+          nextBetId: state.nextBetId + 1,
+        };
+        saveState(logEvent(next, `${player.name} a misé ${amt} pts sur ${betSide==="red"?state.nameRed:state.nameBlue}.`));
+        setBetInput("");
+      }
+
+      function declareWinner(side) {
+        const bets = state.bets||[];
+        if (!bets.length) return;
+        const winBets = bets.filter(b => b.side===side);
+        const losePool = bets.filter(b => b.side!==side).reduce((s,b) => s+b.amount, 0);
+        const winPool = winBets.reduce((s,b) => s+b.amount, 0);
+        const players = { ...state.players };
+        let logLines = [];
+        if (winPool === 0) {
+          logLines.push("Personne n'avait misé sur le gagnant.");
+        } else {
+          winBets.forEach(b => {
+            const winnings = Math.round(losePool * (b.amount/winPool));
+            const payout = b.amount + winnings;
+            const p = players[b.playerId];
+            if (p) { players[b.playerId] = { ...p, balance: p.balance + payout }; logLines.push(`${p.name} récupère ${payout} pts.`); }
+          });
+        }
+        let next = { ...state, players, winner: side };
+        logLines.unshift(`🏆 ${side==="red"?state.nameRed:state.nameBlue} gagne ! Pot : ${winPool+losePool} pts.`);
+        logLines.forEach(l => { next = logEvent(next, l); });
+        saveState(next);
+      }
+
+      function newRound() { saveState(logEvent({ ...state, bets: [], winner: null }, "Nouvelle manche lancée.")); }
+      function resetAll() { saveState(DEFAULT_STATE); setActivePlayerId(null); }
+      function giveBalance() {
+        const amt = parseInt(giveAmount, 10);
+        if (!amt || !giveTargetId || !state.players[giveTargetId]) return;
+        const p = state.players[giveTargetId];
+        saveState(logEvent({ ...state, players: { ...state.players, [giveTargetId]: { ...p, balance: p.balance+amt } } }, `Admin a donné ${amt} pts à ${p.name}.`));
+        setGiveAmount("");
+      }
+
+      if (!state) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",color:"#9aa1b0"}}>Connexion à Firebase…</div>;
+
+      const players = Object.entries(state.players||{}).map(([id,p]) => ({id,...p}));
+      const ranking = [...players].sort((a,b) => b.balance-a.balance);
+      const bets = state.bets||[];
+      const totalRed = bets.filter(b=>b.side==="red").reduce((s,b)=>s+b.amount,0);
+      const totalBlue = bets.filter(b=>b.side==="blue").reduce((s,b)=>s+b.amount,0);
+      const total = totalRed+totalBlue;
+      const pctRed = total>0?Math.round(totalRed/total*100):50;
+      const pctBlue = 100-pctRed;
+      const activePlayer = activePlayerId ? state.players[activePlayerId] : null;
+
+      const S = {
+        wrap:{maxWidth:640,margin:"0 auto",padding:"28px 16px 40px"},
+        h1:{textAlign:"center",fontSize:22,letterSpacing:1,margin:"0 0 4px",fontWeight:700},
+        sub:{textAlign:"center",color:"#9aa1b0",fontSize:13,margin:"0 0 18px"},
+        panel:{background:"#1d2027",borderRadius:14,padding:16,marginBottom:14,boxShadow:"0 0 0 1px #2a2e38 inset"},
+        title:{fontSize:13,fontWeight:700,color:"#9aa1b0",marginBottom:10,textTransform:"uppercase",letterSpacing:.5},
+        row:{display:"flex",gap:6},
+        input:{flex:1,minWidth:0,background:"#11131a",border:"1px solid #2a2e38",borderRadius:8,color:"#eef0f4",padding:"8px 10px",fontSize:13,outline:"none"},
+        btn:{border:"1px solid #2a2e38",borderRadius:8,padding:"8px 14px",fontWeight:600,fontSize:13,cursor:"pointer",color:"#eef0f4",background:"#11131a",whiteSpace:"nowrap"},
+        chip:{background:"#11131a",border:"1px solid #2a2e38",color:"#eef0f4",borderRadius:999,padding:"6px 12px",fontSize:13,cursor:"pointer"},
+        chipActive:{borderColor:"#e0b04a",background:"#2a2410"},
+        betBtn:{border:"none",borderRadius:8,padding:"8px 16px",fontWeight:700,fontSize:13,cursor:"pointer",color:"white",background:"#e0b04a"},
+        errorBanner:{background:"rgba(217,69,69,0.15)",color:"#d94545",border:"1px solid #a82f2f",borderRadius:8,padding:"8px 12px",fontSize:12,textAlign:"center",marginBottom:12,cursor:"pointer"},
+      };
+
+      return (
+        <div style={S.wrap}>
+          <h1 style={S.h1}>⚔️ PARIS D'ÉQUIPE</h1>
+          <p style={S.sub}>Classement en direct — chacun part avec 1000 points</p>
+
+          {error && <div style={S.errorBanner} onClick={()=>setError(null)}>{error}</div>}
+
+          <div style={S.panel}>
+            <div style={S.title}>Qui es-tu ?</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+              {players.map(p => (
+                <button key={p.id} onClick={()=>setActivePlayerId(p.id)} style={{...S.chip,...(activePlayerId===p.id?S.chipActive:{})}}>
+                  {p.name} <span style={{opacity:.6}}>· {p.balance}</span>
+                </button>
+              ))}
+            </div>
+            <div style={S.row}>
+              <input style={S.input} placeholder="Nouveau joueur (prénom)" value={newPlayerName}
+                onChange={e=>setNewPlayerName(e.target.value)} maxLength={16}
+                onKeyDown={e=>e.key==="Enter"&&addPlayer()} />
+              <button style={S.btn} onClick={addPlayer}>+ Ajouter</button>
+            </div>
+          </div>
+
+          {state.winner && (
+            <div style={{textAlign:"center",fontWeight:800,fontSize:15,padding:10,borderRadius:10,marginBottom:14,
+              background:state.winner==="red"?"rgba(217,69,69,0.15)":"rgba(59,111,217,0.15)",
+              color:state.winner==="red"?"#d94545":"#3b6fd9",
+              border:state.winner==="red"?"1px solid #a82f2f":"1px solid #2850a8"}}>
+              🏆 {state.winner==="red"?state.nameRed:state.nameBlue} a gagné cette manche !
+            </div>
+          )}
+
+          <div style={S.panel}>
+            <div style={{height:38,borderRadius:999,overflow:"hidden",display:"flex",background:"#2a2e38"}}>
+              <div style={{width:pctRed+"%",background:"linear-gradient(180deg,#d94545,#a82f2f)",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:13,color:"white",transition:"width .5s"}}>
+                {total>0?pctRed+"%":""}
+              </div>
+              <div style={{width:pctBlue+"%",background:"linear-gradient(180deg,#3b6fd9,#2850a8)",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:13,color:"white",transition:"width .5s"}}>
+                {total>0?pctBlue+"%":""}
+              </div>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",marginTop:10,fontSize:12,color:"#9aa1b0"}}>
+              <span>{totalRed} pts</span><span>Pot : {total} pts</span><span>{totalBlue} pts</span>
+            </div>
+          </div>
+
+          <div style={{display:"flex",gap:14,marginBottom:14}}>
+            <input style={{flex:1,background:"transparent",border:"none",borderBottom:"2px solid #d94545",color:"#eef0f4",fontSize:14,fontWeight:700,padding:"4px 2px 6px",textAlign:"center",outline:"none"}}
+              value={state.nameRed} onChange={e=>saveState({...state,nameRed:e.target.value})} maxLength={20} />
+            <input style={{flex:1,background:"transparent",border:"none",borderBottom:"2px solid #3b6fd9",color:"#eef0f4",fontSize:14,fontWeight:700,padding:"4px 2px 6px",textAlign:"center",outline:"none"}}
+              value={state.nameBlue} onChange={e=>saveState({...state,nameBlue:e.target.value})} maxLength={20} />
+          </div>
+
+          <div style={S.panel}>
+            <div style={S.title}>{activePlayer?`Pari de ${activePlayer.name} (solde : ${activePlayer.balance} pts)`:"Choisis ton nom ci-dessus"}</div>
+            <div style={{display:"flex",gap:8,marginBottom:10}}>
+              <button onClick={()=>setBetSide("red")} style={{flex:1,padding:10,borderRadius:8,border:"1px solid #d94545",color:"white",fontWeight:700,fontSize:13,cursor:"pointer",background:betSide==="red"?"#d94545":"#11131a"}}>{state.nameRed}</button>
+              <button onClick={()=>setBetSide("blue")} style={{flex:1,padding:10,borderRadius:8,border:"1px solid #3b6fd9",color:"white",fontWeight:700,fontSize:13,cursor:"pointer",background:betSide==="blue"?"#3b6fd9":"#11131a"}}>{state.nameBlue}</button>
+            </div>
+            <div style={S.row}>
+              <input type="number" min="1" placeholder="Points à miser" value={betInput}
+                onChange={e=>setBetInput(e.target.value)} style={S.input} disabled={!activePlayer||!!state.winner} />
+              <button style={{...S.betBtn,opacity:!activePlayer||state.winner?.5:1}} onClick={placeBet} disabled={!activePlayer||!!state.winner}>Parier</button>
+            </div>
+            {state.winner && <div style={{fontSize:12,color:"#9aa1b0",marginTop:8}}>Manche terminée — lance une nouvelle manche.</div>}
+          </div>
+
+          {bets.length>0 && (
+            <div style={S.panel}>
+              <div style={S.title}>Paris de cette manche</div>
+              {[...bets].reverse().map(b => {
+                const p = state.players[b.playerId];
+                return <div key={b.id} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid #22252e",fontSize:12}}>
+                  <span>{p?.name||"?"}</span>
+                  <span style={{color:b.side==="red"?"#d94545":"#3b6fd9"}}>{b.side==="red"?state.nameRed:state.nameBlue}</span>
+                  <span>{b.amount} pts</span>
+                </div>;
+              })}
+            </div>
+          )}
+
+          <div style={S.panel}>
+            <div style={S.title}>🏆 Classement</div>
+            {ranking.length===0 ? <div style={{color:"#9aa1b0",fontSize:13}}>Aucun joueur encore.</div>
+              : ranking.map((p,i) => (
+                <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"6px 4px",borderBottom:"1px solid #22252e",fontSize:13}}>
+                  <span style={{color:"#9aa1b0",width:28}}>#{i+1}</span>
+                  <span style={{flex:1,fontWeight:600}}>{p.name}</span>
+                  <span style={{fontWeight:800,color:p.balance===0?"#d94545":p.balance>=1000?"#4ade80":"#eef0f4"}}>{p.balance} pts</span>
+                </div>
+              ))
+            }
+          </div>
+
+          <div style={{background:"#181a20",borderRadius:14,padding:16,marginBottom:14,border:"1px dashed #3a3e48"}}>
+            {!isAdmin ? (
+              <div style={S.row}>
+                <input style={S.input} type="password" placeholder="Code admin" value={adminCodeInput}
+                  onChange={e=>{setAdminCodeInput(e.target.value);setAdminError("");}}
+                  onKeyDown={e=>e.key==="Enter"&&(adminCodeInput===ADMIN_CODE?setIsAdmin(true):setAdminError("Code incorrect."))} />
+                <button style={S.btn} onClick={()=>adminCodeInput===ADMIN_CODE?setIsAdmin(true):setAdminError("Code incorrect.")}>Déverrouiller admin</button>
+              </div>
+            ) : (
+              <div>
+                <div style={S.title}>🔓 Mode admin</div>
+                <div style={{display:"flex",gap:10,marginBottom:14}}>
+                  <button style={{flex:1,padding:10,borderRadius:10,border:"1px solid #2a2e38",background:"#1d2027",color:"#eef0f4",fontWeight:600,fontSize:13,cursor:"pointer"}} onClick={()=>declareWinner("red")} disabled={!!state.winner}>🏆 {state.nameRed} gagne</button>
+                  <button style={{flex:1,padding:10,borderRadius:10,border:"1px solid #2a2e38",background:"#1d2027",color:"#eef0f4",fontWeight:600,fontSize:13,cursor:"pointer"}} onClick={()=>declareWinner("blue")} disabled={!!state.winner}>🏆 {state.nameBlue} gagne</button>
+                  <button style={{flex:1,padding:10,borderRadius:10,border:"1px solid #2a2e38",background:"#1d2027",color:"#eef0f4",fontWeight:600,fontSize:13,cursor:"pointer"}} onClick={newRound} disabled={!state.winner}>↻ Nouvelle manche</button>
+                </div>
+                <div style={S.row}>
+                  <select style={{...S.input,cursor:"pointer"}} value={giveTargetId} onChange={e=>setGiveTargetId(e.target.value)}>
+                    <option value="">Choisir un joueur…</option>
+                    {players.map(p=><option key={p.id} value={p.id}>{p.name} ({p.balance} pts)</option>)}
+                  </select>
+                  <input type="number" min="1" placeholder="Montant" value={giveAmount} onChange={e=>setGiveAmount(e.target.value)} style={{...S.input,maxWidth:100}} />
+                  <button style={S.btn} onClick={giveBalance}>Donner</button>
+                </div>
+                <button style={{...S.btn,marginTop:10,width:"100%"}} onClick={resetAll}>⚠️ Tout réinitialiser</button>
+              </div>
+            )}
+            {adminError && <div style={{color:"#d94545",fontSize:12,marginTop:6}}>{adminError}</div>}
+          </div>
+
+          {(state.history||[]).length>0 && (
+            <div style={S.panel}>
+              <div style={S.title}>Historique</div>
+              <div style={{fontSize:12,color:"#9aa1b0",maxHeight:150,overflowY:"auto"}}>
+                {state.history.map(h=><div key={h.id} style={{padding:"3px 0",borderBottom:"1px solid #22252e"}}>{h.text}</div>)}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
