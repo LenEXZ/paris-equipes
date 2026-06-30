@@ -1,0 +1,15 @@
+import { initializeApp } from "firebase/app";
+import { getDatabase } from "firebase/database";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCaaT9KKRi9aIzZIteorLVdm-TDmB4_Cyw",
+  authDomain: "paris-dequipe-len.firebaseapp.com",
+  databaseURL: "https://paris-dequipe-len-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "paris-dequipe-len",
+  storageBucket: "paris-dequipe-len.firebasestorage.app",
+  messagingSenderId: "75490659674",
+  appId: "1:75490659674:web:40c4f8a7ebf045233a7763",
+};
+
+const app = initializeApp(firebaseConfig);
+export const db = getDatabase(app);
